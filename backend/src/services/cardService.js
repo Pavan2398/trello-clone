@@ -32,7 +32,7 @@ class CardService {
   }
 
   async updateCard(id, updates, userId = 1) {
-    const { title, description, due_date, list_id, position } = updates;
+    const { title, description, due_date, list_id, position, is_due_complete } = updates;
     const fields = [];
     const values = [];
     let idx = 1;
@@ -58,9 +58,13 @@ class CardService {
       fields.push(`position = $${idx++}`);
       values.push(position);
     }
+    if (is_due_complete !== undefined) {
+      fields.push(`is_due_complete = $${idx++}`);
+      values.push(is_due_complete);
+    }
 
     fields.push(`updated_at = NOW()`);
-    
+
     console.log('Updating Card:', id, 'Updates:', updates, 'Fields:', fields);
 
     if (fields.length === 1) return null;
@@ -76,33 +80,33 @@ class CardService {
     // Fetch old data for logging comparison if needed (omitted for speed, just logging action)
     // We need board_id though.
     // Optimization: Log after update.
-    
+
     const { rows } = await db.query(query, values);
     const updatedCard = rows[0];
-    
-    if (updatedCard) {
-       try {
-         // Determine action type
-         let action = 'update';
-         let details = {};
-         if (list_id !== undefined || position !== undefined) {
-             action = 'move';
-             details = { list_id, position };
-         } else {
-             if (title) details.title = title;
-             if (description) details.description_changed = true;
-         }
 
-         // Get board_id from list
-         // This assumes list_id didn't change OR we fetch from new list_id
-         // If list_id changed, we should use it. If not, use current list_id from card.
-         const currentListId = updatedCard.list_id;
-         const listQuery = `SELECT board_id FROM lists WHERE id = $1`;
-         const listRes = await db.query(listQuery, [currentListId]);
-         if (listRes.rows.length > 0) {
-             await auditService.logAction(listRes.rows[0].board_id, userId, 'card', updatedCard.id, action, details);
-         }
-       } catch (e) { console.error('Audit Log Error', e); }
+    if (updatedCard) {
+      try {
+        // Determine action type
+        let action = 'update';
+        let details = {};
+        if (list_id !== undefined || position !== undefined) {
+          action = 'move';
+          details = { list_id, position };
+        } else {
+          if (title) details.title = title;
+          if (description) details.description_changed = true;
+        }
+
+        // Get board_id from list
+        // This assumes list_id didn't change OR we fetch from new list_id
+        // If list_id changed, we should use it. If not, use current list_id from card.
+        const currentListId = updatedCard.list_id;
+        const listQuery = `SELECT board_id FROM lists WHERE id = $1`;
+        const listRes = await db.query(listQuery, [currentListId]);
+        if (listRes.rows.length > 0) {
+          await auditService.logAction(listRes.rows[0].board_id, userId, 'card', updatedCard.id, action, details);
+        }
+      } catch (e) { console.error('Audit Log Error', e); }
     }
 
     return updatedCard;
@@ -111,61 +115,61 @@ class CardService {
   async deleteCard(id, userId = 1) {
     const client = await db.pool.connect();
     try {
-        await client.query('BEGIN');
+      await client.query('BEGIN');
 
-        // Get card details before delete to know board_id
-        const cardQuery = `
+      // Get card details before delete to know board_id
+      const cardQuery = `
             SELECT c.*, l.board_id 
             FROM cards c 
             JOIN lists l ON c.list_id = l.id 
             WHERE c.id = $1
         `;
-        const checkRes = await client.query(cardQuery, [id]);
-        const cardToDelete = checkRes.rows[0];
+      const checkRes = await client.query(cardQuery, [id]);
+      const cardToDelete = checkRes.rows[0];
 
-        // Manual Cascade Delete (Safety fallback if DB cascade missing)
-        await client.query('DELETE FROM card_labels WHERE card_id = $1', [id]);
-        await client.query('DELETE FROM card_members WHERE card_id = $1', [id]);
-        
-        // Checklists require 2-step (items then lists, or cascade if confident)
-        // Deleting checklists should cascade to items if schema is right, but being explicit:
-        // We'll trust the DB cascade for checklists->items to be simple, 
-        // or just delete checklists which usually cascades. 
-        // If strict manual:
-        const clRes = await client.query('SELECT id FROM checklists WHERE card_id = $1', [id]);
-        const clIds = clRes.rows.map(r => r.id);
-        if (clIds.length > 0) {
-            await client.query('DELETE FROM checklist_items WHERE checklist_id = ANY($1::int[])', [clIds]);
-            await client.query('DELETE FROM checklists WHERE card_id = $1', [id]);
-        }
+      // Manual Cascade Delete (Safety fallback if DB cascade missing)
+      await client.query('DELETE FROM card_labels WHERE card_id = $1', [id]);
+      await client.query('DELETE FROM card_members WHERE card_id = $1', [id]);
 
-        const query = `DELETE FROM cards WHERE id = $1 RETURNING *`;
-        const { rows } = await client.query(query, [id]);
-        
-        if (cardToDelete) {
-            try {
-                // We don't await audit log here to avoid transaction block or just do it inside?
-                // Audit service uses its own pool usually? 
-                // Let's just log it *after* commit or inside. 
-                // Since audit uses db.query (pool), it's separate connection or same pool. 
-                // It's safer to do it after COMMIT or inside if we pass client.
-                // For now, let's keep it separate/after to assume success.
-            } catch (e) { console.error('Audit Log Error', e); }
-        }
+      // Checklists require 2-step (items then lists, or cascade if confident)
+      // Deleting checklists should cascade to items if schema is right, but being explicit:
+      // We'll trust the DB cascade for checklists->items to be simple, 
+      // or just delete checklists which usually cascades. 
+      // If strict manual:
+      const clRes = await client.query('SELECT id FROM checklists WHERE card_id = $1', [id]);
+      const clIds = clRes.rows.map(r => r.id);
+      if (clIds.length > 0) {
+        await client.query('DELETE FROM checklist_items WHERE checklist_id = ANY($1::int[])', [clIds]);
+        await client.query('DELETE FROM checklists WHERE card_id = $1', [id]);
+      }
 
-        await client.query('COMMIT');
-        
-        // Log after commit
-        if (cardToDelete) {
-             auditService.logAction(cardToDelete.board_id, userId, 'card', id, 'delete', { title: cardToDelete.title }).catch(console.error);
-        }
+      const query = `DELETE FROM cards WHERE id = $1 RETURNING *`;
+      const { rows } = await client.query(query, [id]);
 
-        return rows[0];
+      if (cardToDelete) {
+        try {
+          // We don't await audit log here to avoid transaction block or just do it inside?
+          // Audit service uses its own pool usually? 
+          // Let's just log it *after* commit or inside. 
+          // Since audit uses db.query (pool), it's separate connection or same pool. 
+          // It's safer to do it after COMMIT or inside if we pass client.
+          // For now, let's keep it separate/after to assume success.
+        } catch (e) { console.error('Audit Log Error', e); }
+      }
+
+      await client.query('COMMIT');
+
+      // Log after commit
+      if (cardToDelete) {
+        auditService.logAction(cardToDelete.board_id, userId, 'card', id, 'delete', { title: cardToDelete.title }).catch(console.error);
+      }
+
+      return rows[0];
     } catch (e) {
-        await client.query('ROLLBACK');
-        throw e;
+      await client.query('ROLLBACK');
+      throw e;
     } finally {
-        client.release();
+      client.release();
     }
   }
 
@@ -232,25 +236,25 @@ class CardService {
       ON CONFLICT DO NOTHING RETURNING *
     `;
     const { rows } = await db.query(query, [cardId, labelId]);
-    
+
     // Log Activity
     try {
-        const ctxQuery = `
+      const ctxQuery = `
             SELECT c.title, l.board_id, lb.name as label_name, lb.color 
             FROM cards c 
             JOIN lists l ON c.list_id = l.id 
             JOIN labels lb ON lb.id = $2 
             WHERE c.id = $1
         `;
-        const ctxRes = await db.query(ctxQuery, [cardId, labelId]);
-        if (ctxRes.rows.length > 0) {
-            const { title, board_id, label_name, color } = ctxRes.rows[0];
-            await auditService.logAction(board_id, userId, 'card', cardId, 'add_label', { 
-                cardTitle: title, 
-                labelName: label_name, 
-                labelColor: color 
-            });
-        }
+      const ctxRes = await db.query(ctxQuery, [cardId, labelId]);
+      if (ctxRes.rows.length > 0) {
+        const { title, board_id, label_name, color } = ctxRes.rows[0];
+        await auditService.logAction(board_id, userId, 'card', cardId, 'add_label', {
+          cardTitle: title,
+          labelName: label_name,
+          labelColor: color
+        });
+      }
     } catch (e) { console.error('Audit Log Error', e); }
 
     return rows[0];
@@ -259,21 +263,21 @@ class CardService {
   async removeLabel(cardId, labelId, userId = 1) {
     // Get context before delete (label still exists in DB, but we query label table so it's fine)
     try {
-        const ctxQuery = `
+      const ctxQuery = `
             SELECT c.title, l.board_id, lb.name as label_name 
             FROM cards c 
             JOIN lists l ON c.list_id = l.id 
             JOIN labels lb ON lb.id = $2 
             WHERE c.id = $1
         `;
-        const ctxRes = await db.query(ctxQuery, [cardId, labelId]);
-        if (ctxRes.rows.length > 0) {
-            const { title, board_id, label_name } = ctxRes.rows[0];
-            await auditService.logAction(board_id, userId, 'card', cardId, 'remove_label', { 
-                cardTitle: title, 
-                labelName: label_name 
-            });
-        }
+      const ctxRes = await db.query(ctxQuery, [cardId, labelId]);
+      if (ctxRes.rows.length > 0) {
+        const { title, board_id, label_name } = ctxRes.rows[0];
+        await auditService.logAction(board_id, userId, 'card', cardId, 'remove_label', {
+          cardTitle: title,
+          labelName: label_name
+        });
+      }
     } catch (e) { console.error('Audit Log Error', e); }
 
     const query = `DELETE FROM card_labels WHERE card_id = $1 AND label_id = $2`;
@@ -287,23 +291,23 @@ class CardService {
       ON CONFLICT DO NOTHING RETURNING *
     `;
     const { rows } = await db.query(query, [cardId, targetUserId]);
-    
+
     try {
-        const ctxQuery = `
+      const ctxQuery = `
             SELECT c.title, l.board_id, u.username 
             FROM cards c 
             JOIN lists l ON c.list_id = l.id 
             JOIN users u ON u.id = $2
             WHERE c.id = $1
         `;
-        const ctxRes = await db.query(ctxQuery, [cardId, targetUserId]);
-        if (ctxRes.rows.length > 0) {
-            const { title, board_id, username } = ctxRes.rows[0];
-            await auditService.logAction(board_id, actionUserId, 'card', cardId, 'add_member', { 
-                cardTitle: title, 
-                memberName: username 
-            });
-        }
+      const ctxRes = await db.query(ctxQuery, [cardId, targetUserId]);
+      if (ctxRes.rows.length > 0) {
+        const { title, board_id, username } = ctxRes.rows[0];
+        await auditService.logAction(board_id, actionUserId, 'card', cardId, 'add_member', {
+          cardTitle: title,
+          memberName: username
+        });
+      }
     } catch (e) { console.error('Audit Log Error', e); }
 
     return rows[0];
@@ -311,21 +315,21 @@ class CardService {
 
   async removeMember(cardId, targetUserId, actionUserId = 1) {
     try {
-        const ctxQuery = `
+      const ctxQuery = `
              SELECT c.title, l.board_id, u.username 
              FROM cards c 
              JOIN lists l ON c.list_id = l.id 
              JOIN users u ON u.id = $2
              WHERE c.id = $1
         `;
-        const ctxRes = await db.query(ctxQuery, [cardId, targetUserId]);
-        if (ctxRes.rows.length > 0) {
-             const { title, board_id, username } = ctxRes.rows[0];
-             await auditService.logAction(board_id, actionUserId, 'card', cardId, 'remove_member', { 
-                 cardTitle: title, 
-                 memberName: username 
-             });
-        }
+      const ctxRes = await db.query(ctxQuery, [cardId, targetUserId]);
+      if (ctxRes.rows.length > 0) {
+        const { title, board_id, username } = ctxRes.rows[0];
+        await auditService.logAction(board_id, actionUserId, 'card', cardId, 'remove_member', {
+          cardTitle: title,
+          memberName: username
+        });
+      }
     } catch (e) { console.error('Audit Log Error', e); }
 
     const query = `DELETE FROM card_members WHERE card_id = $1 AND user_id = $2`;
@@ -370,13 +374,13 @@ class CardService {
       // 5. Copy Checklists
       const checkQuery = `SELECT * FROM checklists WHERE card_id = $1`;
       const checkRes = await client.query(checkQuery, [cardId]);
-      
+
       for (const checklist of checkRes.rows) {
-          const insertCheck = `INSERT INTO checklists (card_id, title, position) VALUES ($1, $2, $3) RETURNING id`;
-          const checkInsertRes = await client.query(insertCheck, [newCard.id, checklist.title, checklist.position]);
-          const newCheckId = checkInsertRes.rows[0].id;
-          
-          await client.query(`
+        const insertCheck = `INSERT INTO checklists (card_id, title, position) VALUES ($1, $2, $3) RETURNING id`;
+        const checkInsertRes = await client.query(insertCheck, [newCard.id, checklist.title, checklist.position]);
+        const newCheckId = checkInsertRes.rows[0].id;
+
+        await client.query(`
               INSERT INTO checklist_items (checklist_id, content, is_completed, position)
               SELECT $1, content, is_completed, position FROM checklist_items WHERE checklist_id = $2
           `, [newCheckId, checklist.id]);

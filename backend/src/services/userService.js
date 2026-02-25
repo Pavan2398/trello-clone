@@ -7,13 +7,13 @@ class UserService {
     const query = 'SELECT id, username, email, avatar_url FROM users ORDER BY username ASC';
     const { rows } = await db.query(query);
     return rows.map(u => ({
-        id: u.id,
-        name: u.username, // Map username to name for frontend consistency
-        username: u.username,
-        email: u.email,
-        avatar: (u.username[0] || 'U').toUpperCase(), // Simple fallback if url fails or for UI
-        avatarUrl: u.avatar_url,
-        color: this.getColorForUser(u.username) // Generate consistent color
+      id: u.id,
+      name: u.username, // Map username to name for frontend consistency
+      username: u.username,
+      email: u.email,
+      avatar: (u.username[0] || 'U').toUpperCase(), // Simple fallback if url fails or for UI
+      avatarUrl: u.avatar_url,
+      color: this.getColorForUser(u.username) // Generate consistent color
     }));
   }
 
@@ -21,19 +21,19 @@ class UserService {
     const colors = ['#667eea', '#764ba2', '#f093fb', '#f5576c', '#4facfe', '#00f2fe', '#43e97b', '#38f9d7'];
     let hash = 0;
     for (let i = 0; i < username.length; i++) {
-        hash = username.charCodeAt(i) + ((hash << 5) - hash);
+      hash = username.charCodeAt(i) + ((hash << 5) - hash);
     }
     const index = Math.abs(hash % colors.length);
     return colors[index];
   }
 
-   async register({ username, email, password }) {
+  async register({ username, email, password }) {
     const passwordHash = await bcrypt.hash(password, 10);
 
     const query = `
       INSERT INTO users (username, email, password_hash)
       VALUES ($1, $2, $3)
-      RETURNING id, username, email
+      RETURNING id, username, email, role
     `;
 
     const { rows } = await db.query(query, [
@@ -42,11 +42,34 @@ class UserService {
       passwordHash
     ]);
 
+    const user = rows[0];
+    const role = user.role || 'user';
+
+    // Generate tokens just like login
+    const token = jwt.sign(
+      { id: user.id, email: user.email, role },
+      process.env.JWT_SECRET,
+      { expiresIn: '15m' }
+    );
+
+    const refreshToken = jwt.sign(
+      { id: user.id, role },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    // Store refresh token
+    await this.storeRefreshToken(user.id, refreshToken);
+
     return {
-        id: rows[0].id,
-        username: rows[0].username,
-        email: rows[0].email,
-        role: 'user' // Default role
+      token,
+      refreshToken,
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        role
+      }
     };
   }
 
@@ -130,7 +153,7 @@ class UserService {
       process.env.JWT_SECRET,
       { expiresIn: '15m' }
     );
-    
+
     // Optional: Rotate refresh token here if strict security needed
     return { token: newAccessToken, user };
   }
@@ -162,31 +185,31 @@ class UserService {
 
   // Helper to login without password (for OAuth)
   async loginById(userId) {
-     const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [userId]);
-     const user = rows[0];
-     if(!user) throw new Error('User not found');
+    const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [userId]);
+    const user = rows[0];
+    if (!user) throw new Error('User not found');
 
-     // Check if user is suspended
-     if (user.is_suspended) {
-       throw new Error('Account is suspended. Please contact support.');
-     }
+    // Check if user is suspended
+    if (user.is_suspended) {
+      throw new Error('Account is suspended. Please contact support.');
+    }
 
-     const token = jwt.sign({ id: user.id, email: user.email, role: user.role || 'user' }, process.env.JWT_SECRET, { expiresIn: '15m' });
-     const refreshToken = jwt.sign({ id: user.id, role: user.role || 'user' }, process.env.JWT_SECRET, { expiresIn: '7d' });
-     
-     await this.storeRefreshToken(user.id, refreshToken);
+    const token = jwt.sign({ id: user.id, email: user.email, role: user.role || 'user' }, process.env.JWT_SECRET, { expiresIn: '15m' });
+    const refreshToken = jwt.sign({ id: user.id, role: user.role || 'user' }, process.env.JWT_SECRET, { expiresIn: '7d' });
 
-     return {
-       token,
-       refreshToken,
-       user: {
-         id: user.id,
-         username: user.username,
-         email: user.email,
-         avatar: user.avatar_url,
-         role: user.role
-       }
-     };
+    await this.storeRefreshToken(user.id, refreshToken);
+
+    return {
+      token,
+      refreshToken,
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        avatar: user.avatar_url,
+        role: user.role
+      }
+    };
   }
 }
 

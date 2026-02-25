@@ -7,9 +7,12 @@ import { Toaster } from './components/ui/sonner';
 
 import { GoogleOAuthProvider } from '@react-oauth/google';
 
+// Debug: Verify Google Client ID is loaded from environment
+console.log('VITE_GOOGLE_CLIENT_ID:', import.meta.env.VITE_GOOGLE_CLIENT_ID);
+
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <GoogleOAuthProvider clientId="640675607395-26raje2b9fd5qsnefhk04ak2nief1i4d.apps.googleusercontent.com">
+    <GoogleOAuthProvider clientId={import.meta.env.VITE_GOOGLE_CLIENT_ID}>
       <OrganizationProvider>
         <App />
         <Toaster />
