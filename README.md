@@ -1,7 +1,7 @@
 # Trello-like Project Management Tool
 
 ## 1. Project Overview
-This project is a comprehensive **Kanban-style Project Management Tool** built as a Fullstack SDE Intern Assignment. It replicates the core functionality of Trello, allowing users to organize tasks into Boards, Lists, and Cards with an intuitive drag-and-drop interface.
+This project is a comprehensive **Kanban-style Project Management Tool** built as a Fullstack SaaS Project Management Tool. It replicates the core functionality of Trello, allowing users to organize tasks into Boards, Lists, and Cards with an intuitive drag-and-drop interface.
 
 **Purpose**: To demonstrate full-stack development proficiency using modern web technologies, focusing on clean architecture, responsive design, and robust data management.
 
